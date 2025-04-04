@@ -1,0 +1,6 @@
+{
+  "devDependencies": {
+    "@mysten/sui.js": "^0.54.1",
+    "vite": "^6.2.5"
+  }
+}

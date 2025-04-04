@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ad Wall - Sui Testnet</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="canvas-wrapper">
+        <canvas id="ad-grid"></canvas>
+    </div>
+
+    <button id="toggle-controls" class="toggle-btn">Hide Controls</button>
+
+    <div class="control-panel" id="control-panel">
+        <div class="header">
+            <h1>Ad Wall</h1>
+            <div class="wallet-section">
+                <button id="connect-wallet" class="btn btn-wallet">Connect Wallet</button>
+                <span id="wallet-address" class="wallet-address"></span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="input-group">
+                <label for="width-input">Width</label>
+                <input type="number" id="width-input" value="1" min="1" class="input-number">
+                <label for="height-input">Height</label>
+                <input type="number" id="height-input" value="1" min="1" class="input-number">
+            </div>
+            <button id="buy-button" disabled class="btn btn-primary">Buy Blocks</button>
+            <div class="price-info">
+                <span>Price per Block: <span id="price-per-block">0</span> Test SUI</span>
+                <span>Total: <span id="price-display">0</span> Test SUI</span>
+                <span>Estimated Price for More Space:</span>
+                <span id="price-estimation">Select more blocks to see estimate</span>
+            </div>
+        </div>
+
+        <div class="upload-section" id="upload-section" style="display: none;">
+            <div class="input-group">
+                <label for="image-upload">Upload Ad (Image/GIF)</label>
+                <input type="file" id="image-upload" accept="image/*,.gif" class="input-file">
+                <button id="upload-image-button" class="btn btn-primary">Add Ad</button>
+            </div>
+        </div>
+
+        <div class="zoom-controls">
+            <label>Zoom</label>
+            <input type="range" id="zoom-slider" min="1" max="3" step="0.1" value="1">
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <div id="test-phase-note" class="note">
+        <p>This is a test phase only, not real SUI. The connected wallet is static for demonstration purposes.</p>
+        <button id="close-note" class="btn btn-primary">Got It</button>
+    </div>
+
+    <script src="lib/pinata.js"></script>
+    <script src="lib/sui.js"></script>
+    
+    <script type="module" src="script.js"></script>
+</body>
+</html>
