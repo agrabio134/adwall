@@ -49,16 +49,18 @@ const priceDisplay = document.getElementById('price-display');
 const priceEstimationDisplay = document.getElementById('price-estimation');
 const zoomSlider = document.getElementById('zoom-slider');
 const toast = document.getElementById('toast');
+const loadingScreen = document.createElement('div');
 
 // State
 let walletConnected = false;
 let selectedX = 0;
 let selectedY = 0;
 let blocks = new Array(GRID_WIDTH * GRID_HEIGHT).fill(null);
-let images = new Map();
+let images = new Map(); // Stores { element: HTMLImageElement, isGif: boolean }
 let wallet;
 let lastPurchasedBlockId = null;
 let walletAddress = null;
+let isLoading = true;
 
 // Pinata configuration
 const pinataApiKey = '98f595dcac5c827de322';
@@ -70,6 +72,112 @@ const SUI_TESTNET = 'https://fullnode.testnet.sui.io:443';
 
 // Initialize Sui client
 const suiClient = new SuiClient({ url: SUI_TESTNET });
+
+// Setup futuristic loading screen
+function setupLoadingScreen() {
+    loadingScreen.id = 'loading-screen';
+    loadingScreen.innerHTML = `
+        <div class="loader">
+            <div class="cyber-circle"></div>
+            <div class="cyber-text">Initializing AdWall Matrix...</div>
+        </div>
+    `;
+    document.body.appendChild(loadingScreen);
+
+    const style = document.createElement('style');
+    style.textContent = `
+        #loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            transition: opacity 0.5s ease-out;
+        }
+        .loader {
+            text-align: center;
+        }
+        .cyber-circle {
+            width: 100px;
+            height: 100px;
+            border: 4px solid #00ffff;
+            border-radius: 50%;
+            border-top-color: #ff00ff;
+            animation: spin 1s linear infinite, pulse 2s infinite;
+            margin: 0 auto 20px;
+        }
+        .cyber-text {
+            color: #00ffff;
+            font-family: 'Courier New', monospace;
+            font-size: 24px;
+            text-shadow: 0 0 10px #00ffff;
+            animation: flicker 1.5s infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 10px #00ffff; }
+            50% { box-shadow: 0 0 20px #ff00ff; }
+            100% { box-shadow: 0 0 10px #00ffff; }
+        }
+        @keyframes flicker {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+// Hide loading screen
+function hideLoadingScreen() {
+    loadingScreen.style.opacity = '0';
+    setTimeout(() => {
+        loadingScreen.style.display = 'none';
+        isLoading = false;
+        animate(); // Start animation loop
+    }, 500);
+}
+
+// Helper function for image loading with GIF support
+async function loadImageWithTimeout(src, timeout = 10000) {
+    const gateways = [
+        'https://ipfs.io/ipfs/',
+        'https://gateway.pinata.cloud/ipfs/',
+        'https://cloudflare-ipfs.com/ipfs/'
+    ];
+    
+    for (const gateway of gateways) {
+        try {
+            return await new Promise((resolve, reject) => {
+                const img = document.createElement('img'); // Use HTMLImageElement
+                img.style.display = 'none'; // Keep it off-screen
+                document.body.appendChild(img); // Add to DOM for animation
+                const timer = setTimeout(() => reject(new Error('Image load timeout')), timeout);
+                img.onload = () => {
+                    clearTimeout(timer);
+                    const isGif = src.toLowerCase().endsWith('.gif');
+                    resolve({ element: img, isGif });
+                };
+                img.onerror = () => {
+                    clearTimeout(timer);
+                    document.body.removeChild(img); // Clean up on error
+                    reject(new Error('Image load failed'));
+                };
+                img.src = `${gateway}${src.split('/ipfs/')[1]}`;
+            });
+        } catch (error) {
+            console.warn(`Failed with gateway ${gateway}:`, error);
+            if (gateway === gateways[gateway.length - 1]) throw error;
+            continue;
+        }
+    }
+}
 
 // Show toast notification
 function showToast(message, duration = 3000) {
@@ -84,11 +192,11 @@ function updateCanvasSize() {
     const height = window.innerHeight;
     canvas.width = width;
     canvas.height = height;
-    drawGrid();
 }
 
-// Draw grid
+// Draw grid with animation support
 function drawGrid() {
+    if (isLoading) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const visibleWidth = canvas.width / (BLOCK_SIZE * zoomLevel);
     const visibleHeight = canvas.height / (BLOCK_SIZE * zoomLevel);
@@ -117,22 +225,23 @@ function drawGrid() {
 
     for (let i = 0; i < GRID_WIDTH * GRID_HEIGHT; i++) {
         const block = blocks[i];
-        if (block) {
+        if (block && block.isTopLeft) {
             const x = (i % GRID_WIDTH) * BLOCK_SIZE * zoomLevel;
             const y = Math.floor(i / GRID_WIDTH) * BLOCK_SIZE * zoomLevel;
 
-            if (block.isTopLeft) {
-                if (block.imageCid) {
-                    const img = images.get(block.imageCid);
-                    if (img) {
-                        ctx.drawImage(img, x, y, block.width * BLOCK_SIZE * zoomLevel, block.height * BLOCK_SIZE * zoomLevel);
-                    }
+            if (block.imageCid) {
+                const imageData = images.get(block.imageCid);
+                if (imageData && imageData.element && imageData.element.complete && imageData.element.naturalWidth !== 0) {
+                    ctx.drawImage(imageData.element, x, y, block.width * BLOCK_SIZE * zoomLevel, block.height * BLOCK_SIZE * zoomLevel);
                 } else {
-                    ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+                    ctx.fillStyle = 'rgba(128, 128, 128, 0.3)';
                     ctx.fillRect(x, y, block.width * BLOCK_SIZE * zoomLevel, block.height * BLOCK_SIZE * zoomLevel);
-                    ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
-                    ctx.strokeRect(x, y, block.width * BLOCK_SIZE * zoomLevel, block.height * BLOCK_SIZE * zoomLevel);
                 }
+            } else {
+                ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+                ctx.fillRect(x, y, block.width * BLOCK_SIZE * zoomLevel, block.height * BLOCK_SIZE * zoomLevel);
+                ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+                ctx.strokeRect(x, y, block.width * BLOCK_SIZE * zoomLevel, block.height * BLOCK_SIZE * zoomLevel);
             }
         }
     }
@@ -145,6 +254,12 @@ function drawGrid() {
     ctx.strokeRect(selectedX * BLOCK_SIZE * zoomLevel, selectedY * BLOCK_SIZE * zoomLevel, width * BLOCK_SIZE * zoomLevel, height * BLOCK_SIZE * zoomLevel);
 
     ctx.restore();
+}
+
+// Animation loop
+function animate() {
+    drawGrid();
+    requestAnimationFrame(animate);
 }
 
 // Save canvas state to Firebase
@@ -175,7 +290,7 @@ async function saveCanvasState() {
     }
 }
 
-// Load canvas state from Firebase
+// Load canvas state from Firebase with progressive loading
 async function loadCanvasState() {
     try {
         const canvasDoc = doc(db, 'canvas', 'gridState');
@@ -191,23 +306,29 @@ async function loadCanvasState() {
                 isTopLeft: block.isTopLeft
             } : null);
             
-            blocks.forEach((block, index) => {
-                if (block?.imageCid && !images.has(block.imageCid)) {
-                    const img = new Image();
-                    img.src = `https://ipfs.io/ipfs/${block.imageCid}`;
-                    img.onload = () => drawGrid();
-                    images.set(block.imageCid, img);
-                }
-            });
-            
+            const imagePromises = blocks
+                .filter(block => block?.imageCid && !images.has(block.imageCid))
+                .map(async (block) => {
+                    try {
+                        const imageData = await loadImageWithTimeout(`https://ipfs.io/ipfs/${block.imageCid}`);
+                        images.set(block.imageCid, imageData);
+                    } catch (error) {
+                        console.warn(`Failed to load image ${block.imageCid}:`, error);
+                    }
+                });
+
             drawGrid();
             console.log('Canvas state loaded from Firebase');
+            hideLoadingScreen();
+            await Promise.all(imagePromises);
             return true;
         }
+        hideLoadingScreen();
         return false;
     } catch (error) {
         console.error('Error loading canvas state:', error);
         showToast('Failed to load canvas state: ' + error.message, 5000);
+        hideLoadingScreen();
         return false;
     }
 }
@@ -225,7 +346,6 @@ function setupRealtimeListener() {
                 height: block.height,
                 isTopLeft: block.isTopLeft
             } : null);
-            drawGrid();
         }
     }, (error) => {
         console.error('Realtime listener error:', error);
@@ -247,23 +367,20 @@ zoomSlider.addEventListener('input', () => {
     const centerY = (canvas.height / 2 - offsetY) / oldZoom;
     offsetX = canvas.width / 2 - centerX * zoomLevel;
     offsetY = canvas.height / 2 - centerY * zoomLevel;
-    drawGrid();
 });
 
 // Connect wallet and authenticate with Firebase
 connectButton.addEventListener('click', async () => {
-
-
     try {
-        // Verify Firebase setup
-        if (!auth || !auth.app) {
-            throw new Error('Firebase Auth not initialized correctly');
+        if (!window.SuiWallet) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            if (!window.SuiWallet) {
+                throw new Error('Sui Wallet extension not detected. Please install it and refresh.');
+            }
         }
 
-        // Connect Sui Wallet
-        if (!window.SuiWallet || typeof window.SuiWallet.getWallet !== 'function') {
-            showToast('Sui Wallet not installed or not properly initialized.', 5000);
-            return;
+        if (!auth || !auth.app) {
+            throw new Error('Firebase Auth not initialized correctly');
         }
 
         wallet = await window.SuiWallet.getWallet();
@@ -275,7 +392,6 @@ connectButton.addEventListener('click', async () => {
         walletAddress = accounts[0];
         walletAddressSpan.textContent = `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
 
-        // Attempt Firebase sign-in
         console.log('Signing in anonymously...');
         const userCredential = await signInAnonymously(auth);
         console.log('Signed in as:', userCredential.user.uid);
@@ -300,6 +416,7 @@ connectButton.addEventListener('click', async () => {
 
 // Canvas interaction handlers
 canvas.addEventListener('mousedown', (e) => {
+    if (isLoading) return;
     isDragging = true;
     startX = e.clientX - offsetX;
     startY = e.clientY - offsetY;
@@ -307,37 +424,37 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
-    if (isDragging) {
-        offsetX = e.clientX - startX;
-        offsetY = e.clientY - startY;
-        const maxOffsetX = 0;
-        const minOffsetX = -(GRID_WIDTH * BLOCK_SIZE * zoomLevel - canvas.width);
-        const maxOffsetY = 0;
-        const minOffsetY = -(GRID_HEIGHT * BLOCK_SIZE * zoomLevel - canvas.height);
-        offsetX = Math.min(maxOffsetX, Math.max(minOffsetX, offsetX));
-        offsetY = Math.min(maxOffsetY, Math.max(minOffsetY, offsetY));
-        drawGrid();
-    }
+    if (isLoading || !isDragging) return;
+    offsetX = e.clientX - startX;
+    offsetY = e.clientY - startY;
+    const maxOffsetX = 0;
+    const minOffsetX = -(GRID_WIDTH * BLOCK_SIZE * zoomLevel - canvas.width);
+    const maxOffsetY = 0;
+    const minOffsetY = -(GRID_HEIGHT * BLOCK_SIZE * zoomLevel - canvas.height);
+    offsetX = Math.min(maxOffsetX, Math.max(minOffsetX, offsetX));
+    offsetY = Math.min(maxOffsetY, Math.max(minOffsetY, offsetY));
 });
 
 canvas.addEventListener('mouseup', () => {
+    if (isLoading) return;
     isDragging = false;
     canvas.style.cursor = 'default';
 });
 
 canvas.addEventListener('mouseleave', () => {
+    if (isLoading) return;
     isDragging = false;
     canvas.style.cursor = 'default';
 });
 
 canvas.addEventListener('click', (e) => {
+    if (isLoading) return;
     const rect = canvas.getBoundingClientRect();
     selectedX = Math.floor((e.clientX - rect.left - offsetX) / (BLOCK_SIZE * zoomLevel));
     selectedY = Math.floor((e.clientY - rect.top - offsetY) / (BLOCK_SIZE * zoomLevel));
     selectedX = Math.max(0, Math.min(selectedX, GRID_WIDTH - (parseInt(widthInput.value) || 1)));
     selectedY = Math.max(0, Math.min(selectedY, GRID_HEIGHT - (parseInt(heightInput.value) || 1)));
     updatePrice();
-    drawGrid();
 });
 
 // Update price
@@ -399,10 +516,8 @@ async function fetchGridData() {
                         };
 
                         if (imageCid && !images.has(imageCid)) {
-                            const img = new Image();
-                            img.src = `https://ipfs.io/ipfs/${imageCid}`;
-                            img.onload = () => drawGrid();
-                            images.set(imageCid, img);
+                            const imageData = await loadImageWithTimeout(`https://ipfs.io/ipfs/${imageCid}`);
+                            images.set(imageCid, imageData);
                         }
                     }
                 } catch (e) {
@@ -411,10 +526,10 @@ async function fetchGridData() {
             }
             await saveCanvasState();
         }
-        drawGrid();
     } catch (error) {
         console.error('Error fetching grid data:', error);
         showToast('Failed to fetch grid data: ' + error.message, 5000);
+        hideLoadingScreen();
     }
 }
 
@@ -432,7 +547,7 @@ async function getBlockPrice(blockId) {
 // Buy blocks
 buyButton.addEventListener('click', async () => {
     if (!walletConnected || !walletAddress) {
-        showToast('Please connect your wallet first', 5000);
+        showToast('Please connect your walletioid first', 5000);
         return;
     }
 
@@ -494,7 +609,6 @@ buyButton.addEventListener('click', async () => {
         uploadSection.style.display = 'block';
         showToast('Blocks purchased successfully! Now upload your ad.');
         await saveCanvasState();
-        drawGrid();
     } catch (error) {
         console.error('Purchase failed:', error);
         showToast('Failed to buy blocks: ' + error.message, 5000);
@@ -504,7 +618,7 @@ buyButton.addEventListener('click', async () => {
     }
 });
 
-// Upload image
+// Upload image with GIF support
 uploadImageButton.addEventListener('click', async () => {
     if (!lastPurchasedBlockId) {
         alert('Please purchase blocks first.');
@@ -548,13 +662,8 @@ uploadImageButton.addEventListener('click', async () => {
             }
         }
 
-        const img = new Image();
-        img.src = `https://ipfs.io/ipfs/${imageCid}`;
-        img.onload = () => {
-            images.set(imageCid, img);
-            drawGrid();
-        };
-
+        const imageData = await loadImageWithTimeout(`https://ipfs.io/ipfs/${imageCid}`);
+        images.set(imageCid, imageData);
         showToast('Ad uploaded successfully!');
         uploadSection.style.display = 'none';
         lastPurchasedBlockId = null;
@@ -571,7 +680,9 @@ uploadImageButton.addEventListener('click', async () => {
 const testPhaseNote = document.getElementById('test-phase-note');
 const closeNoteButton = document.getElementById('close-note');
 
+// Initial setup with loading screen
 window.addEventListener('load', () => {
+    setupLoadingScreen();
     testPhaseNote.style.display = 'block';
     fetchGridData();
     setupRealtimeListener();
@@ -581,11 +692,9 @@ closeNoteButton.addEventListener('click', () => {
     testPhaseNote.style.display = 'none';
 });
 
-// Initial setup
 window.addEventListener("load", async () => {
     console.log("Grid Data Loaded on Refresh", blocks);
     updateCanvasSize();
-    drawGrid();
 });
 
 window.addEventListener('resize', updateCanvasSize);
