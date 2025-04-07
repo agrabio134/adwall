@@ -3,6 +3,56 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.0/firebas
 import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-firestore.js";
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-auth.js";
 
+// Pinata upload function
+async function uploadToPinata(file, apiKey, secretApiKey) {
+    const url = 'https://api.pinata.cloud/pinning/pinFileToIPFS';
+    
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'pinata_api_key': apiKey,
+                'pinata_secret_api_key': secretApiKey,
+            },
+            body: formData,
+        });
+
+        if (!response.ok) {
+            throw new Error(`Pinata upload failed: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        return data.IpfsHash;
+    } catch (error) {
+        console.error('Error uploading to Pinata:', error);
+        throw error;
+    }
+}
+
+window.uploadToPinata = uploadToPinata;
+
+// Mock SuiClient and SuiWallet for testing
+class SuiClient {
+    constructor({ url }) {
+        this.url = url;
+    }
+    async callContract({ packageObjectId, module, function: func, arguments: args }) {
+        return null; // Mock returns null
+    }
+}
+
+window.SuiWallet = {
+    getWallet: async () => ({
+        requestAccounts: async () => ['0x6e8b65e7f53772bd5f4d9588f07deb4b30d0fff3a8aa0d4fc6103a92d45fff0a'],
+        signAndExecuteTransaction: async (tx) => {
+            return { digest: 'mock-digest' };
+        },
+    }),
+};
+
 // Firebase configuration
 const firebaseConfig = {
     apiKey: "AIzaSyBMYvcmBUSlRTlGuFHc_hzBTOBWHv-_tSg",
@@ -28,6 +78,9 @@ let offsetX = 0;
 let offsetY = 0;
 let isDragging = false;
 let startX, startY;
+let touchStartTime, touchStartX, touchStartY; // For tap detection
+const TAP_THRESHOLD = 10; // Max pixels moved to consider it a tap
+const TAP_DURATION = 300; // Max milliseconds for a tap
 
 // Canvas setup
 const canvas = document.getElementById('ad-grid');
@@ -35,12 +88,14 @@ const ctx = canvas.getContext('2d');
 
 // UI elements
 const toggleControls = document.getElementById('toggle-controls');
+const guideButton = document.getElementById('guide-button');
 const controlPanel = document.getElementById('control-panel');
 const connectButton = document.getElementById('connect-wallet');
 const walletAddressSpan = document.getElementById('wallet-address');
 const widthInput = document.getElementById('width-input');
 const heightInput = document.getElementById('height-input');
 const imageUpload = document.getElementById('image-upload');
+const captionInput = document.getElementById('caption-input');
 const buyButton = document.getElementById('buy-button');
 const uploadImageButton = document.getElementById('upload-image-button');
 const uploadSection = document.getElementById('upload-section');
@@ -48,8 +103,11 @@ const pricePerBlockDisplay = document.getElementById('price-per-block');
 const priceDisplay = document.getElementById('price-display');
 const priceEstimationDisplay = document.getElementById('price-estimation');
 const zoomSlider = document.getElementById('zoom-slider');
+const tooltip = document.getElementById('tooltip');
 const toast = document.getElementById('toast');
 const loadingScreen = document.createElement('div');
+const guideModal = document.getElementById('guide-modal');
+const closeGuideButton = document.getElementById('close-guide');
 
 // State
 let walletConnected = false;
@@ -155,9 +213,9 @@ async function loadImageWithTimeout(src, timeout = 10000) {
     for (const gateway of gateways) {
         try {
             return await new Promise((resolve, reject) => {
-                const img = document.createElement('img'); // Use HTMLImageElement
-                img.style.display = 'none'; // Keep it off-screen
-                document.body.appendChild(img); // Add to DOM for animation
+                const img = document.createElement('img');
+                img.style.display = 'none';
+                document.body.appendChild(img);
                 const timer = setTimeout(() => reject(new Error('Image load timeout')), timeout);
                 img.onload = () => {
                     clearTimeout(timer);
@@ -166,10 +224,10 @@ async function loadImageWithTimeout(src, timeout = 10000) {
                 };
                 img.onerror = () => {
                     clearTimeout(timer);
-                    document.body.removeChild(img); // Clean up on error
+                    document.body.removeChild(img);
                     reject(new Error('Image load failed'));
                 };
-                img.src = `${gateway}${src.split('/ipfs/')[1]}`;
+                img.src = `${gateway}${src.split('/ipfs/')[1] || src}`;
             });
         } catch (error) {
             console.warn(`Failed with gateway ${gateway}:`, error);
@@ -194,8 +252,17 @@ function updateCanvasSize() {
     canvas.height = height;
 }
 
+// Show tooltip at specific position
+function showTooltip(x, y, caption) {
+    console.log(`Showing tooltip at (${x}, ${y}) with caption: "${caption}"`);
+    tooltip.textContent = caption || 'No caption provided';
+    tooltip.style.left = `${x + 10}px`;
+    tooltip.style.top = `${y + 10}px`;
+    tooltip.style.display = 'block';
+}
+
 // Draw grid with animation support
-function drawGrid() {
+function drawGrid(mouseX = null, mouseY = null) {
     if (isLoading) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const visibleWidth = canvas.width / (BLOCK_SIZE * zoomLevel);
@@ -223,6 +290,7 @@ function drawGrid() {
         ctx.stroke();
     }
 
+    let tooltipShown = false;
     for (let i = 0; i < GRID_WIDTH * GRID_HEIGHT; i++) {
         const block = blocks[i];
         if (block && block.isTopLeft) {
@@ -244,6 +312,25 @@ function drawGrid() {
                 ctx.strokeRect(x, y, block.width * BLOCK_SIZE * zoomLevel, block.height * BLOCK_SIZE * zoomLevel);
             }
         }
+    }
+
+    if (mouseX !== null && mouseY !== null) {
+        const gridX = Math.floor((mouseX - offsetX) / (BLOCK_SIZE * zoomLevel));
+        const gridY = Math.floor((mouseY - offsetY) / (BLOCK_SIZE * zoomLevel));
+        const blockId = gridY * GRID_WIDTH + gridX;
+        const block = blocks[blockId];
+        if (block && block.imageCid) {
+            const topLeftId = (Math.floor(blockId / GRID_WIDTH) - (block.isTopLeft ? 0 : block.height - 1)) * GRID_WIDTH + (blockId % GRID_WIDTH) - (block.isTopLeft ? 0 : block.width - 1);
+            const topLeftBlock = blocks[topLeftId];
+            if (topLeftBlock && topLeftBlock.isTopLeft && topLeftBlock.imageCid) {
+                showTooltip(mouseX, mouseY, topLeftBlock.caption);
+                tooltipShown = true;
+            }
+        }
+    }
+
+    if (!tooltipShown) {
+        tooltip.style.display = 'none';
     }
 
     const width = parseInt(widthInput.value) || 1;
@@ -278,7 +365,8 @@ async function saveCanvasState() {
                 imageCid: block.imageCid,
                 width: block.width,
                 height: block.height,
-                isTopLeft: block.isTopLeft
+                isTopLeft: block.isTopLeft,
+                caption: block.caption || 'No caption set'
             } : null),
             timestamp: Date.now()
         };
@@ -290,7 +378,7 @@ async function saveCanvasState() {
     }
 }
 
-// Load canvas state from Firebase with progressive loading
+// Load canvas state from Firebase with default caption
 async function loadCanvasState() {
     try {
         const canvasDoc = doc(db, 'canvas', 'gridState');
@@ -303,7 +391,8 @@ async function loadCanvasState() {
                 imageCid: block.imageCid,
                 width: block.width,
                 height: block.height,
-                isTopLeft: block.isTopLeft
+                isTopLeft: block.isTopLeft,
+                caption: block.caption !== undefined ? block.caption : 'No caption set'
             } : null);
             
             const imagePromises = blocks
@@ -318,7 +407,7 @@ async function loadCanvasState() {
                 });
 
             drawGrid();
-            console.log('Canvas state loaded from Firebase');
+            console.log('Canvas state loaded from Firebase:', blocks.filter(b => b && b.imageCid).length, 'blocks with images');
             hideLoadingScreen();
             await Promise.all(imagePromises);
             return true;
@@ -344,8 +433,10 @@ function setupRealtimeListener() {
                 imageCid: block.imageCid,
                 width: block.width,
                 height: block.height,
-                isTopLeft: block.isTopLeft
+                isTopLeft: block.isTopLeft,
+                caption: block.caption !== undefined ? block.caption : 'No caption set'
             } : null);
+            console.log('Realtime update received:', blocks.filter(b => b && b.imageCid).length, 'blocks with images');
         }
     }, (error) => {
         console.error('Realtime listener error:', error);
@@ -357,6 +448,15 @@ function setupRealtimeListener() {
 toggleControls.addEventListener('click', () => {
     controlPanel.classList.toggle('hidden');
     toggleControls.textContent = controlPanel.classList.contains('hidden') ? 'Show Controls' : 'Hide Controls';
+});
+
+// Guide button functionality
+guideButton.addEventListener('click', () => {
+    guideModal.style.display = 'flex';
+});
+
+closeGuideButton.addEventListener('click', () => {
+    guideModal.style.display = 'none';
 });
 
 // Zoom functionality
@@ -414,7 +514,7 @@ connectButton.addEventListener('click', async () => {
     }
 });
 
-// Canvas interaction handlers
+// Canvas interaction handlers (Mouse)
 canvas.addEventListener('mousedown', (e) => {
     if (isLoading) return;
     isDragging = true;
@@ -424,15 +524,20 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
-    if (isLoading || !isDragging) return;
-    offsetX = e.clientX - startX;
-    offsetY = e.clientY - startY;
-    const maxOffsetX = 0;
-    const minOffsetX = -(GRID_WIDTH * BLOCK_SIZE * zoomLevel - canvas.width);
-    const maxOffsetY = 0;
-    const minOffsetY = -(GRID_HEIGHT * BLOCK_SIZE * zoomLevel - canvas.height);
-    offsetX = Math.min(maxOffsetX, Math.max(minOffsetX, offsetX));
-    offsetY = Math.min(maxOffsetY, Math.max(minOffsetY, offsetY));
+    if (isLoading) return;
+    if (isDragging) {
+        offsetX = e.clientX - startX;
+        offsetY = e.clientY - startY;
+        const maxOffsetX = 0;
+        const minOffsetX = -(GRID_WIDTH * BLOCK_SIZE * zoomLevel - canvas.width);
+        const maxOffsetY = 0;
+        const minOffsetY = -(GRID_HEIGHT * BLOCK_SIZE * zoomLevel - canvas.height);
+        offsetX = Math.min(maxOffsetX, Math.max(minOffsetX, offsetX));
+        offsetY = Math.min(maxOffsetY, Math.max(minOffsetY, offsetY));
+    } else {
+        const rect = canvas.getBoundingClientRect();
+        drawGrid(e.clientX - rect.left, e.clientY - rect.top); // Show tooltip on hover
+    }
 });
 
 canvas.addEventListener('mouseup', () => {
@@ -445,15 +550,115 @@ canvas.addEventListener('mouseleave', () => {
     if (isLoading) return;
     isDragging = false;
     canvas.style.cursor = 'default';
+    tooltip.style.display = 'none';
 });
 
+// Canvas interaction handlers (Touch)
+canvas.addEventListener('touchstart', (e) => {
+    if (isLoading) return;
+    const touch = e.touches[0];
+    touchStartX = touch.clientX;
+    touchStartY = touch.clientY;
+    touchStartTime = Date.now();
+    startX = touch.clientX - offsetX;
+    startY = touch.clientY - offsetY;
+    e.preventDefault();
+});
+
+canvas.addEventListener('touchmove', (e) => {
+    if (isLoading) return;
+    const touch = e.touches[0];
+    const deltaX = touch.clientX - touchStartX;
+    const deltaY = touch.clientY - touchStartY;
+    
+    // Only start dragging if moved beyond threshold
+    if (!isDragging && (Math.abs(deltaX) > TAP_THRESHOLD || Math.abs(deltaY) > TAP_THRESHOLD)) {
+        isDragging = true;
+        canvas.style.cursor = 'grabbing';
+    }
+
+    if (isDragging) {
+        offsetX = touch.clientX - startX;
+        offsetY = touch.clientY - startY;
+        const maxOffsetX = 0;
+        const minOffsetX = -(GRID_WIDTH * BLOCK_SIZE * zoomLevel - canvas.width);
+        const maxOffsetY = 0;
+        const minOffsetY = -(GRID_HEIGHT * BLOCK_SIZE * zoomLevel - canvas.height);
+        offsetX = Math.min(maxOffsetX, Math.max(minOffsetX, offsetX));
+        offsetY = Math.min(maxOffsetY, Math.max(minOffsetY, offsetY));
+    }
+    e.preventDefault();
+});
+
+canvas.addEventListener('touchend', (e) => {
+    if (isLoading) return;
+    const touch = e.changedTouches[0];
+    const deltaX = touch.clientX - touchStartX;
+    const deltaY = touch.clientY - touchStartY;
+    const duration = Date.now() - touchStartTime;
+
+    if (!isDragging && Math.abs(deltaX) <= TAP_THRESHOLD && Math.abs(deltaY) <= TAP_THRESHOLD && duration <= TAP_DURATION) {
+        // Handle tap
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = touch.clientX - rect.left;
+        const mouseY = touch.clientY - rect.top;
+        
+        const gridX = Math.floor((mouseX - offsetX) / (BLOCK_SIZE * zoomLevel));
+        const gridY = Math.floor((mouseY - offsetY) / (BLOCK_SIZE * zoomLevel));
+        const blockId = gridY * GRID_WIDTH + gridX;
+        const block = blocks[blockId];
+
+        if (block && block.imageCid) {
+            const topLeftId = (Math.floor(blockId / GRID_WIDTH) - (block.isTopLeft ? 0 : block.height - 1)) * GRID_WIDTH + (blockId % GRID_WIDTH) - (block.isTopLeft ? 0 : block.width - 1);
+            const topLeftBlock = blocks[topLeftId];
+            if (topLeftBlock && topLeftBlock.isTopLeft && topLeftBlock.imageCid) {
+                console.log(`Tapped block ${blockId} (top-left: ${topLeftId}) with imageCid: ${topLeftBlock.imageCid}, caption: ${topLeftBlock.caption}`);
+                showTooltip(mouseX, mouseY, topLeftBlock.caption);
+                setTimeout(() => {
+                    tooltip.style.display = 'none';
+                }, 3000); // Hide after 3 seconds
+                return;
+            }
+        }
+
+        // Select block if not an ad
+        selectedX = Math.max(0, Math.min(gridX, GRID_WIDTH - (parseInt(widthInput.value) || 1)));
+        selectedY = Math.max(0, Math.min(gridY, GRID_HEIGHT - (parseInt(heightInput.value) || 1)));
+        updatePrice();
+    }
+
+    isDragging = false;
+    canvas.style.cursor = 'default';
+    e.preventDefault();
+});
+
+// Mouse click handler (unchanged for desktop)
 canvas.addEventListener('click', (e) => {
     if (isLoading) return;
     const rect = canvas.getBoundingClientRect();
-    selectedX = Math.floor((e.clientX - rect.left - offsetX) / (BLOCK_SIZE * zoomLevel));
-    selectedY = Math.floor((e.clientY - rect.top - offsetY) / (BLOCK_SIZE * zoomLevel));
-    selectedX = Math.max(0, Math.min(selectedX, GRID_WIDTH - (parseInt(widthInput.value) || 1)));
-    selectedY = Math.max(0, Math.min(selectedY, GRID_HEIGHT - (parseInt(heightInput.value) || 1)));
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    const gridX = Math.floor((mouseX - offsetX) / (BLOCK_SIZE * zoomLevel));
+    const gridY = Math.floor((mouseY - offsetY) / (BLOCK_SIZE * zoomLevel));
+    const blockId = gridY * GRID_WIDTH + gridX;
+    const block = blocks[blockId];
+
+    if (block && block.imageCid) {
+        const topLeftId = (Math.floor(blockId / GRID_WIDTH) - (block.isTopLeft ? 0 : block.height - 1)) * GRID_WIDTH + (blockId % GRID_WIDTH) - (block.isTopLeft ? 0 : block.width - 1);
+        const topLeftBlock = blocks[topLeftId];
+        if (topLeftBlock && topLeftBlock.isTopLeft && topLeftBlock.imageCid) {
+            console.log(`Clicked block ${blockId} (top-left: ${topLeftId}) with imageCid: ${topLeftBlock.imageCid}, caption: ${topLeftBlock.caption}`);
+            showTooltip(mouseX, mouseY, topLeftBlock.caption);
+            setTimeout(() => {
+                tooltip.style.display = 'none';
+            }, 3000);
+            return;
+        }
+    }
+
+    selectedX = Math.max(0, Math.min(gridX, GRID_WIDTH - (parseInt(widthInput.value) || 1)));
+    selectedY = Math.max(0, Math.min(gridY, GRID_HEIGHT - (parseInt(heightInput.value) || 1)));
     updatePrice();
 });
 
@@ -484,7 +689,7 @@ async function updatePrice() {
     priceEstimationDisplay.textContent = `${(estimatedPrice / 1e9).toFixed(2)} Test SUI for ${estimatedWidth}x${estimatedHeight} blocks`;
 }
 
-// Fetch grid data
+// Fetch grid data with default caption
 async function fetchGridData() {
     try {
         const loadedFromFirebase = await loadCanvasState();
@@ -512,7 +717,8 @@ async function fetchGridData() {
                             imageCid: imageCid || null,
                             width: 1,
                             height: 1,
-                            isTopLeft: true
+                            isTopLeft: true,
+                            caption: imageCid ? 'No caption set' : null
                         };
 
                         if (imageCid && !images.has(imageCid)) {
@@ -547,7 +753,7 @@ async function getBlockPrice(blockId) {
 // Buy blocks
 buyButton.addEventListener('click', async () => {
     if (!walletConnected || !walletAddress) {
-        showToast('Please connect your walletioid first', 5000);
+        showToast('Please connect your wallet first', 5000);
         return;
     }
 
@@ -600,7 +806,8 @@ buyButton.addEventListener('click', async () => {
                     imageCid: null,
                     width,
                     height,
-                    isTopLeft: i === 0 && j === 0
+                    isTopLeft: i === 0 && j === 0,
+                    caption: null
                 };
             }
         }
@@ -618,7 +825,7 @@ buyButton.addEventListener('click', async () => {
     }
 });
 
-// Upload image with GIF support
+// Upload image with GIF support and caption
 uploadImageButton.addEventListener('click', async () => {
     if (!lastPurchasedBlockId) {
         alert('Please purchase blocks first.');
@@ -634,6 +841,8 @@ uploadImageButton.addEventListener('click', async () => {
         alert('Please select an image to upload.');
         return;
     }
+
+    const caption = captionInput.value.trim() || null;
 
     uploadImageButton.disabled = true;
     uploadImageButton.textContent = 'Uploading...';
@@ -659,6 +868,7 @@ uploadImageButton.addEventListener('click', async () => {
             for (let j = 0; j < width; j++) {
                 const currentBlockId = (selectedY + i) * GRID_WIDTH + (selectedX + j);
                 blocks[currentBlockId].imageCid = imageCid;
+                blocks[currentBlockId].caption = caption || 'No caption set';
             }
         }
 
@@ -666,8 +876,10 @@ uploadImageButton.addEventListener('click', async () => {
         images.set(imageCid, imageData);
         showToast('Ad uploaded successfully!');
         uploadSection.style.display = 'none';
+        captionInput.value = '';
         lastPurchasedBlockId = null;
         await saveCanvasState();
+        console.log('Uploaded block with imageCid:', imageCid, 'caption:', caption || 'No caption set');
     } catch (error) {
         console.error('Image upload failed:', error);
         showToast('Failed to upload ad: ' + error.message, 5000);
@@ -677,19 +889,30 @@ uploadImageButton.addEventListener('click', async () => {
     }
 });
 
-const testPhaseNote = document.getElementById('test-phase-note');
-const closeNoteButton = document.getElementById('close-note');
-
-// Initial setup with loading screen
+// Initial setup with loading screen and notes
 window.addEventListener('load', () => {
     setupLoadingScreen();
+    const testPhaseNote = document.getElementById('test-phase-note');
+    const closeNoteButton = document.getElementById('close-note');
+    const fundingNote = document.getElementById('funding-note');
+    const closeFundingNoteButton = document.getElementById('close-funding-note');
+
     testPhaseNote.style.display = 'block';
+    setTimeout(() => {
+        closeNoteButton.disabled = false;
+    }, 3000);
+
+    closeNoteButton.addEventListener('click', () => {
+        testPhaseNote.style.display = 'none';
+        fundingNote.style.display = 'block';
+    });
+
+    closeFundingNoteButton.addEventListener('click', () => {
+        fundingNote.style.display = 'none';
+    });
+
     fetchGridData();
     setupRealtimeListener();
-});
-
-closeNoteButton.addEventListener('click', () => {
-    testPhaseNote.style.display = 'none';
 });
 
 window.addEventListener("load", async () => {

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ad WALL - Sui Testnet</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+  <script type="module" crossorigin src="/assets/index-C_pzRD72.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-BgGq4XBC.css">
+</head>
+<body>
+    <div class="canvas-wrapper">
+        <canvas id="ad-grid"></canvas>
+    </div>
+
+    <button id="toggle-controls" class="toggle-btn">Hide Controls</button>
+    <button id="guide-button" class="toggle-btn guide-btn">Guide</button>
+
+    <div class="control-panel" id="control-panel">
+        <div class="header">
+            <h1>Ad Wall</h1>
+            <div class="wallet-section">
+                <button id="connect-wallet" class="btn btn-wallet">Connect Wallet</button>
+                <span id="wallet-address" class="wallet-address"></span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="input-group">
+                <label for="width-input">Width</label>
+                <input type="number" id="width-input" value="1" min="1" class="input-number">
+                <label for="height-input">Height</label>
+                <input type="number" id="height-input" value="1" min="1" class="input-number">
+            </div>
+            <button id="buy-button" disabled class="btn btn-primary">Buy Blocks</button>
+            <div class="price-info">
+                <span>Price per Block: <span id="price-per-block">0</span> Test SUI</span>
+                <span>Total: <span id="price-display">0</span> Test SUI</span>
+                <span>Estimated Price for More Space:</span>
+                <span id="price-estimation">Select more blocks to see estimate</span>
+            </div>
+        </div>
+
+        <div class="upload-section" id="upload-section" style="display: none;">
+            <div class="input-group">
+                <label for="image-upload">Upload Ad (Image/GIF)</label>
+                <input type="file" id="image-upload" accept="image/*,.gif" class="input-file">
+                <label for="caption-input">Caption (max 50 chars)</label>
+                <input type="text" id="caption-input" maxlength="50" placeholder="Enter caption" class="input-text">
+                <button id="upload-image-button" class="btn btn-primary">Add Ad</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="zoom-controls fixed-zoom">
+        <label>Zoom</label>
+        <input type="range" id="zoom-slider" min="1" max="10" step="0.1" value="1">
+    </div>
+
+    <div id="tooltip" class="tooltip"></div>
+    <div id="toast" class="toast"></div>
+
+    <div id="test-phase-note" class="note">
+        <p>This is a test phase only, not real SUI. The connected wallet is static for demonstration purposes.</p>
+        <button id="close-note" class="btn btn-primary" disabled>Got It</button>
+    </div>
+
+    <div id="funding-note" class="note" style="display: none;">
+        <p>Interested in taking Ad Wall to Sui mainnet with features like block trading, buying, selling, and dynamic pricing? Contact me at business.harveyagrabio@gmail.com to collaborate and fund this project!</p>
+        <button id="close-funding-note" class="btn btn-primary">Got It</button>
+    </div>
+
+    <div id="guide-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <h2>Ad Wall Guide</h2>
+            <p>Welcome to Ad Wall! Here's how to use it:</p>
+            <ul style="text-align: left; padding-left: 20px;">
+                <li><strong>Connect Wallet:</strong> Click "Connect Wallet" to link your Sui wallet.</li>
+                <li><strong>Select Area:</strong> Click and drag on the grid to move, then click to select an area. Adjust width and height.</li>
+                <li><strong>Buy Blocks:</strong> Purchase your selected blocks with Test SUI.</li>
+                <li><strong>Upload Ad:</strong> After buying, upload an image or GIF with an optional caption.</li>
+                <li><strong>Zoom:</strong> Use the fixed slider to zoom in/out (up to 10x).</li>
+            </ul>
+            <button id="close-guide" class="btn btn-primary">Close</button>
+        </div>
+    </div>
+
+</body>
+</html>
